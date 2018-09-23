@@ -251,18 +251,33 @@ int main() {
           	vector<double> next_y_vals;
 
 
-            // Provided previous path point size.
-            int prev_size = previous_path_x.size();
+            //  NOTE:- Path Planning -- BEGINS HERE
 
-            // Preventing collitions.
-            if (prev_size > 0) {
-              car_s = end_path_s;
-            }
-
-            // Prediction : Analysing other cars positions.
+            // variable declarations
             bool needs_brake = false;
             bool sf_car_in_left_lane = false;
             bool sf_car_in_right_lane = false;
+
+            // current starting point references
+            double current_ref_x = car_x;
+            double current_ref_y = car_y;
+            double current_ref_yaw = deg2rad(car_yaw);
+
+            // predicted way points in X & Y
+            vector<double> pred_wp_x;
+            vector<double> pred_wp_y;
+
+            int prev_path_size = previous_path_x.size();
+            // set car's s from the end_path for smoother transition
+            if (prev_path_size > 0) {
+              car_s = end_path_s;
+            }
+
+            // NOTE:- Prediction process
+            //////  Use sensor fusion data to determine the traffic situation
+            //////  find out if this car needs to brake or change lanes.
+            //////  otherwise get back to start lane and accelerate to possible MAX_SPEED
+
             for ( int i = 0; i < sensor_fusion.size(); i++ ) {
                 float d = sensor_fusion[i][6];
 
@@ -277,7 +292,7 @@ int main() {
                 double sfVelocity = sqrt(sfVX*sfVX + sfVY*sfVY);
                 double sf_car_s = sensor_fusion[i][5];
                 // future position
-                sf_car_s += ((double)prev_size * 0.02 * sfVelocity);
+                sf_car_s += ((double)prev_path_size * 0.02 * sfVelocity);
 
                 if ( sfLane == lane ) {
                   needs_brake |= sf_car_s > car_s && sf_car_s - car_s < 30;
@@ -288,7 +303,9 @@ int main() {
                 }
             }
 
-            // Behavior : Let's see what to do.
+            // NOTE:- Behavior Planning
+            //////  this step basically uses the results from the prediction process
+            //////  and determines teh appropriate course of action.
             if (needs_brake) { // Car ahead
               if (!sf_car_in_left_lane && lane > 0) {
                 lane--; // lane change - move to left.
@@ -299,6 +316,8 @@ int main() {
                 drive_to_speed -= ACCL;
               }
             } else {
+
+              /// when no ego car around
               if ((lane != 1) && ((lane == 0 && !sf_car_in_right_lane)
                               || (lane == 2 && !sf_car_in_left_lane))) {
                 // move to center lane
@@ -311,55 +330,52 @@ int main() {
               }
             }
 
-          	vector<double> ptsx;
-            vector<double> ptsy;
 
-            double current_ref_x = car_x;
-            double current_ref_y = car_y;
-            double current_ref_yaw = deg2rad(car_yaw);
-
-            // Do I have have previous points
-            if ( prev_size < 2 ) {
-                ptsx.push_back(car_x - cos(car_yaw));
-                ptsy.push_back(car_y - sin(car_yaw));
-                ptsx.push_back(car_x);
-                ptsy.push_back(car_y);
+            // NOTE:- Trajectory Planning
+            //////  Predict the new course of the car based on the current predictions and planned Behavior
+            //////  determine the new set of future points based on the highway map.
+            // retrieve starting points - based on the preivous path
+            if ( prev_path_size < 2 ) {
+                pred_wp_x.push_back(car_x - cos(car_yaw));
+                pred_wp_y.push_back(car_y - sin(car_yaw));
+                pred_wp_x.push_back(car_x);
+                pred_wp_y.push_back(car_y);
             } else {
-              // cout << "\nBefore : " << ptsx.size() << ", " << ptsy.size() << endl;
-              for(int j = prev_size - 2; j < prev_size; j++) {
-                ptsx.push_back((double) previous_path_x[j]);
-                ptsy.push_back((double) previous_path_y[j]);
+              // cout << "\nBefore : " << pred_wp_x.size() << ", " << pred_wp_y.size() << endl;
+              for(int j = prev_path_size - 2; j < prev_path_size; j++) {
+                pred_wp_x.push_back((double) previous_path_x[j]);
+                pred_wp_y.push_back((double) previous_path_y[j]);
                 // cout << j << "path X, Y : " << previous_path_x[j] << ", " << previous_path_y[j] << endl;
               }
-              current_ref_x = ptsx[1];
-              current_ref_y = ptsy[1];
-              current_ref_yaw = atan2(ptsy[1] - ptsy[0], ptsx[1] - ptsx[0]);
+              current_ref_x = pred_wp_x[1];
+              current_ref_y = pred_wp_y[1];
+              current_ref_yaw = atan2(pred_wp_y[1] - pred_wp_y[0], pred_wp_x[1] - pred_wp_x[0]);
             }
 
             // get next 3 waypoints..
             // cout << "getXY : " << car_s << " ; " << lane << endl;
             for(int i = 1; i <= 3; i++) {
               vector<double> wp = getXY((i*30 + car_s), (4 * lane + 2), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              ptsx.push_back(wp[0]);
-              ptsy.push_back(wp[1]);
+              pred_wp_x.push_back(wp[0]);
+              pred_wp_y.push_back(wp[1]);
             }
 
-            // Making coordinates to local car coordinates.
-            for ( int i = 0; i < ptsx.size(); i++ ) {
-              double shift_x = ptsx[i] - current_ref_x;
-              double shift_y = ptsy[i] - current_ref_y;
+            for ( int i = 0; i < pred_wp_x.size(); i++ ) {
+              double shift_x = pred_wp_x[i] - current_ref_x;
+              double shift_y = pred_wp_y[i] - current_ref_y;
 
-              ptsx[i] = shift_x * cos(0 - current_ref_yaw) - shift_y * sin(0 - current_ref_yaw);
-              ptsy[i] = shift_x * sin(0 - current_ref_yaw) + shift_y * cos(0 - current_ref_yaw);
+              pred_wp_x[i] = shift_x * cos(0 - current_ref_yaw) - shift_y * sin(0 - current_ref_yaw);
+              pred_wp_y[i] = shift_x * sin(0 - current_ref_yaw) + shift_y * cos(0 - current_ref_yaw);
             }
 
             // Create the spline.
             tk::spline s;
-            s.set_points(ptsx, ptsy);
+            // fit cubic splines
+            s.set_points(pred_wp_x, pred_wp_y);
 
             // Output path points from previous path for continuity.
-            // cout << "prev_size ::  "<< prev_size << endl;
-            for ( int i = 0; i < prev_size; i++ ) {
+            // cout << "prev_path_size ::  "<< prev_path_size << endl;
+            for ( int i = 0; i < prev_path_size; i++ ) {
               next_x_vals.push_back(previous_path_x[i]);
               next_y_vals.push_back(previous_path_y[i]);
             }
@@ -373,7 +389,7 @@ int main() {
             double no_of_steps = next_path_distance/(0.02 * drive_to_speed / 2.24);
 
             // fill the stack with 30 to 50 points always.
-            for( int i = 1; i < 30 - prev_size; i++ ) {
+            for( int i = 1; i < 30 - prev_path_size; i++ ) {
               // define the tail end of future points
 
               double newX_pts = swapX + next_step_X/no_of_steps;
@@ -391,7 +407,7 @@ int main() {
               next_y_vals.push_back(newY_pts);
             }
 
-
+            // Path Planning -- ENDS HERE
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           	msgJson["next_x"] = next_x_vals;
